@@ -11,7 +11,7 @@ user_input = st.text_input("Enter case file identifier or query:")
 if st.button("Get Summary"):
     if user_input:
         # Send a request to your model API to retrieve the summary
-        model_api_url = "http://your-model-api-url/summarize"  # Replace with your actual model API URL
+        model_api_url = " https://23b0-196-216-70-186.ngrok-free.app/summarize"  # Replace with your actual model API URL
         payload = {"input": user_input}
         
         try:
