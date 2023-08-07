@@ -3,3 +3,4 @@ torch==2.0.1
 tqdm==4.62.1
 pyngrok==5.1.0
 streamlit==0.89.0
+requests==2.26.0
