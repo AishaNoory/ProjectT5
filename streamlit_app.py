@@ -1,20 +1,28 @@
 import streamlit as st
-from transformers import pipeline
-st.markdown(""" This is a Streamlit App """)
-st.title("Text Summarization App")
+import requests
 
-# Text input widget
-text_input = st.text_area("Enter text to summarize:")
+# Streamlit app title
+st.title("Case File Summarizer")
 
-# Summarization options
-max_length = st.slider("Max Summary Length", min_value=10, max_value=500, value=150)
+# User input: case file identifier or query
+user_input = st.text_input("Enter case file identifier or query:")
 
-# Summarize button
-if st.button("Summarize"):
-    if text_input:
-        summarizer = pipeline("summarization")
-        summary = summarizer(text_input, max_length=max_length)[0]['summary_text']
-        st.subheader("Summary:")
-        st.write(summary)
+# Summarization button
+if st.button("Get Summary"):
+    if user_input:
+        # Send a request to your model API to retrieve the summary
+        model_api_url = "http://your-model-api-url/summarize"  # Replace with your actual model API URL
+        payload = {"input": user_input}
+        
+        try:
+            response = requests.post(model_api_url, json=payload)
+            if response.status_code == 200:
+                summary = response.json()["summary"]
+                st.subheader("Summary:")
+                st.write(summary)
+            else:
+                st.error("Error: Unable to retrieve summary.")
+        except requests.RequestException as e:
+            st.error("Error: Unable to connect to the model API.")
     else:
-        st.warning("Please enter text to summarize.")
+        st.warning("Please enter a case file identifier or query.")
