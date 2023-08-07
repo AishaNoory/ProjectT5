@@ -12,10 +12,6 @@ if st.button("Get Summary"):
     if user_input:
         # Send a request to your model API to retrieve the summary
         model_api_url = " https://23b0-196-216-70-186.ngrok-free.app/summarize"  # Replace with your actual model API URL
-        response = requests.post(model_api_url, json=payload)
-        print(response.status_code)
-        print(response.text)
-
         payload = {"input": user_input}
         
         try:
