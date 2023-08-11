@@ -1,0 +1,373 @@
+!pip install transformers
+!pip install evaluate
+!pip install sentencepiece
+!pip install pytorch_lightning
+!pip install PyMuPDF
+!pip install flask
+!pip install Gradio
+
+
+from flask import Flask, request, jsonify
+from torch.utils.data import DataLoader
+import torch
+import re
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader, RandomSampler
+import pytorch_lightning as pl
+import nltk
+from nltk.corpus import stopwords
+nltk.download('stopwords')
+
+from nltk.stem import WordNetLemmatizer
+nltk.download("wordnet")
+nltk.download('omw-1.4')
+import os
+import string
+import torch.nn as nn
+import pandas as pd
+import numpy as np
+import evaluate
+import matplotlib.pyplot as plt
+import transformers
+from transformers import T5ForConditionalGeneration, T5Tokenizer
+from transformers import get_linear_schedule_with_warmup, AdamW
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import warnings
+warnings.filterwarnings("ignore")
+
+from google.colab import files
+
+# Upload the zip file containing your folder (make sure it's in .zip format)
+uploaded = files.upload()
+
+from nltk.downloader import zipfile
+import os
+import pandas as pd
+import fitz  # PyMuPDF
+from transformers import T5Tokenizer
+
+# Replace 'zip_file_name' with the name of the uploaded zip file
+zip_file_name = "train_data.zip"
+
+# Replace 'extracted_folder' with the name of the folder where you want to extract the contents
+extracted_folder = "/content/sample_data/train_data"
+
+# List all files in the extracted folder (including the subfolder)
+contents = os.listdir(extracted_folder)
+
+# Print the contents
+print(contents)
+# Unzip the file to the specified folder
+with zipfile.ZipFile(zip_file_name, "r") as zip_ref:
+    zip_ref.extractall(extracted_folder)
+
+# List all PDF files in the extracted folder
+pdf_files = [file for file in os.listdir(extracted_folder) if file.endswith(".pdf")]
+
+# Create an empty DataFrame to store the extracted data
+df = pd.DataFrame(columns=["File_Name", "Content"])
+
+# Function to read the content of a PDF file
+def read_pdf_content(file_path):
+    pdf_document = fitz.open(file_path)
+    text = ""
+    for page_num in range(pdf_document.page_count):
+        page = pdf_document.load_page(page_num)
+        text += page.get_text()
+    pdf_document.close()
+    return text
+
+# Read the content of each PDF file and store it in the DataFrame
+for pdf_file in pdf_files:
+    file_path = os.path.join(extracted_folder, pdf_file)
+    content = read_pdf_content(file_path)
+    print(f"Processed file: {pdf_file}")
+    df = df.append({"File_Name": pdf_file, "Content": content}, ignore_index=True)
+
+
+MODEL = T5ForConditionalGeneration.from_pretrained("t5-base", return_dict=True)
+TOKENIZER = T5Tokenizer.from_pretrained("t5-base")
+BATCH_SIZE = 4
+TEXT_LEN = 512
+SUMMARY_LEN = 64
+EPOCHS = 2
+DEVICE = "cuda:0"
+
+class CaseSummaryDataset(Dataset):
+    def __init__(self, df, tokenizer, text_len, headline_len):
+        self.df = df
+        self.File_Name = self.df["File_Name"]
+        self.text = self.df["Content"]
+        self.tokenizer = tokenizer
+        self.text_len = text_len
+        self.headline_len = headline_len
+
+    def __len__(self):
+        return len(self.File_Name)
+
+    def __getitem__(self, idx):
+        # T5 transformers performs different tasks by prepending the particular prefix to the input text.
+        text = "summarize:" + str(self.text[idx])                # In order to avoid dtype mismatch, as T5 is text-to-text transformer, the datatype must be string
+        headline = str(self.File_Name[idx])
+
+        text_tokenizer = self.tokenizer(text, max_length=self.text_len, padding="max_length",
+                                                        truncation=True, add_special_tokens=True)
+        headline_tokenizer = self.tokenizer(headline, max_length=self.headline_len, padding="max_length",
+                                                        truncation=True, add_special_tokens=True)
+        return {
+            "input_ids": torch.tensor(text_tokenizer["input_ids"], dtype=torch.long),
+            "attention_mask": torch.tensor(text_tokenizer["attention_mask"], dtype=torch.long),
+            "summary_ids": torch.tensor(headline_tokenizer["input_ids"], dtype=torch.long),
+            "summary_mask": torch.tensor(headline_tokenizer["attention_mask"], dtype=torch.long)
+        }
+
+
+
+class CaseSummaryDataModule(pl.LightningDataModule):
+    def __init__(self,
+                train_df,
+                val_df,
+                test_df,
+                batch_size,
+                tokenizer,
+                text_len,
+                headline_len):
+        super().__init__()
+        self.train_df = train_df
+        self.val_df = val_df
+        self.batch_size = batch_size
+        self.test_df = test_df
+        self.tokenizer = tokenizer
+        self.text_len = text_len
+        self.headline_len = headline_len
+
+    def setup(self, stage=None):
+        self.train_dataset = CaseSummaryDataset(
+            self.train_df,
+            self.tokenizer,
+            self.text_len,
+            self.headline_len)
+
+        self.val_dataset = CaseSummaryDataset(
+            self.val_df,
+            self.tokenizer,
+            self.text_len,
+            self.headline_len)
+
+        self.test_dataset = CaseSummaryDataset(
+            self.test_df,
+            self.tokenizer,
+            self.text_len,
+            self.headline_len
+        )
+
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=4)
+
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            num_workers=4)
+
+    def test_dataloader(self):
+        return DataLoader(
+              self.test_dataset,
+              batch_size=self.batch_size,
+              num_workers=4
+          )
+
+test_size = 0.09 # Example value, adjust as needed
+train_size = 0.09
+HEADLINE_LEN=64
+train_df, test_df = train_test_split(df, test_size=test_size, random_state=42)
+train_df, val_df = train_test_split(train_df, test_size=train_size, random_state=42)
+
+
+train_df = train_df.reset_index(drop=True)
+val_df = val_df.reset_index(drop=True)
+test_df = test_df.reset_index(drop=True)
+
+
+Case_summary_module = CaseSummaryDataModule(train_df, val_df, test_df, BATCH_SIZE, TOKENIZER, TEXT_LEN, HEADLINE_LEN)
+Case_summary_module.setup()
+
+from transformers import T5ForConditionalGeneration
+
+MODEL = 't5-small'
+
+class CaseSummaryModel(pl.LightningModule):
+    def __init__(self):
+        super(CaseSummaryModel, self).__init__()
+        self.model = T5ForConditionalGeneration.from_pretrained(MODEL)
+
+    def forward(self, input_ids, attention_mask, labels=None, decoder_attention_mask=None):
+        outputs = self.model(input_ids=input_ids,
+                             attention_mask=attention_mask,
+                             labels=labels,
+                             decoder_attention_mask=decoder_attention_mask)
+
+        # Return a dictionary with the loss as a named key
+        return {'loss': outputs.loss}
+
+    # ... rest of your code remains the same ...
+
+
+    def training_step(self, batch, batch_idx):
+      input_ids = batch["input_ids"]
+      attention_mask = batch["attention_mask"]
+      labels = batch["summary_ids"]
+      decoder_attention_mask = batch["summary_mask"]
+    def configure_optimizers(self):
+      return torch.optim.Adam(self.parameters(), lr=0.02)
+# Call the forward method and get the dictionary with the loss
+      outputs_dict = self(input_ids, attention_mask, labels, decoder_attention_mask)
+
+# Access the loss from the dictionary
+      loss = outputs_dict['loss']
+
+# Log the training loss (optional)
+      self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
+      return loss
+
+
+
+    def train_dataloader(self):
+         return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=4)
+
+def validation_step(self, batch, batch_idx):
+    input_ids = batch["input_ids"]
+    attention_mask = batch["attention_mask"]
+    labels = batch["summary_ids"]
+    decoder_attention_mask = batch["summary_mask"]
+
+    # Call the forward method and get the dictionary with the loss
+    outputs_dict = self(input_ids, attention_mask, labels, decoder_attention_mask)
+
+    # Access the loss from the dictionary
+    loss = outputs_dict['loss']
+
+    return loss
+
+def test_step(self, batch, batch_idx):
+    input_ids = batch["input_ids"]
+    attention_mask = batch["attention_mask"]
+    loss, output = self(input_ids=input_ids, attention_mask=attention_mask)
+    return loss
+
+
+    from transformers import AdamW, get_linear_schedule_with_warmup
+
+    def configure_optimizers(self):
+     optimizer = AdamW(self.parameters(), lr=0.0001)
+     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0, num_training_steps=EPOCHS*len(df))
+     return { 'optimizer':optimizer, 'lr_scheduler':scheduler}
+
+
+
+model = CaseSummaryModel()
+trainer = pl.Trainer(
+    max_epochs=EPOCHS,
+    accelerator='gpu'
+)
+
+
+trainer.fit(model, datamodule=Case_summary_module)
+
+
+from transformers import AutoModelForSeq2SeqLM
+CaseSummaryModel = AutoModelForSeq2SeqLM.from_pretrained('t5-base')
+def summarize(text):
+    inputs = TOKENIZER(text,
+                       max_length=TEXT_LEN,
+                       truncation=True,
+                       padding="max_length",
+                       add_special_tokens=True,
+                       return_tensors="pt")
+    summarized_ids = CaseSummaryModel.generate(
+        input_ids=inputs["input_ids"],
+        attention_mask=inputs["attention_mask"],
+        num_beams=4)
+
+    return " ".join([TOKENIZER.decode(token_ids, skip_special_tokens=True)
+                    for token_ids in summarized_ids])
+
+bleu = evaluate.load("google_bleu")
+
+text = df.iloc[2]["Content"]
+headline = df.iloc[2]["File_Name"]
+summarized_text =summarize(text)
+
+bleu.compute(predictions=[summarized_text], references=[headline])
+
+from transformers import T5ForConditionalGeneration, T5Tokenizer
+
+# Assuming you have already fine-tuned and loaded the model and tokenizer
+model = T5ForConditionalGeneration.from_pretrained('t5-base')
+tokenizer = T5Tokenizer.from_pretrained('t5-base')
+
+# Save the model and tokenizer to a directory
+output_dir = '/content/lightning_logs/version_0/checkpoints'
+model.save_pretrained(output_dir)
+tokenizer.save_pretrained(output_dir)
+
+!pip install PyPDF2
+
+
+from transformers import T5ForConditionalGeneration, T5Tokenizer
+import gradio as gr
+import os
+import PyPDF2
+
+# Load the pre-trained model and tokenizer
+model_path = '/content/lightning_logs/version_0/checkpoints/'
+model = T5ForConditionalGeneration.from_pretrained(model_path)
+tokenizer = T5Tokenizer.from_pretrained(model_path)
+
+# List all files in the train_data folder
+train_data_folder = '/content/sample_data/train_data/train_data'  # Replace with the actual path
+available_files = [filename for filename in os.listdir(train_data_folder) if filename.endswith(".pdf")]
+
+# Function to generate summaries
+def summarize(selected_file):
+    if selected_file not in available_files:
+        return "File not available."
+
+    # Read textual content from the PDF file
+    file_path = os.path.join(train_data_folder, selected_file)
+    try:
+        with open(file_path, 'rb') as pdf_file:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            pdf_text = ""
+            for page_num in range(len(pdf_reader.pages)):
+                pdf_text += pdf_reader.pages[page_num].extract_text()
+    except Exception as e:
+        return f"Error reading file: {str(e)}"
+
+    # Generate summary
+    input_text = "summarize: " + pdf_text
+    input_ids = tokenizer.encode(input_text, return_tensors="pt", max_length=1024, truncation=True)
+
+    summary_ids = model.generate(input_ids, max_length=150, min_length=50, length_penalty=2.0, num_beams=4, early_stopping=True)
+    summary = tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+
+    return summary
+
+# Create the Gradio interface
+iface = gr.Interface(
+    fn=summarize,
+    inputs=gr.inputs.Dropdown(available_files, label="Select a File"),
+    outputs=gr.outputs.Textbox(),
+    title="T5 File Summarization",
+    description="Select a file and get a summarized version of its content.",
+)
+
+# Launch the interface
+iface.launch(share=True)
+
+
